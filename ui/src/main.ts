@@ -493,6 +493,10 @@ const rolePri = (role: string | null): number =>
 
 // 사이드바 pane-detail·Control Center(taskRow) 공용 실행상태 판정 — 로직 한 벌만 유지.
 // exited/agent_alive=false → offline. self-report 있으면 CC_TASK_STATE 매핑. 없으면 idle_secs로 추정.
+// 자기보고 신선도 임계값(초) — CC 패널의 기존 stale 기준(:139,:603,:1051 — "2분 넘으면 stale")과 동일.
+// 새 상수를 발명하지 않고 이미 쓰이던 값을 재사용한다.
+const SELF_REPORT_STALE_SECS = 120;
+
 function paneStateFrom(opts: {
   exited?: boolean;
   agentAlive?: boolean | null;
@@ -503,7 +507,11 @@ function paneStateFrom(opts: {
   if (opts.exited || opts.agentAlive === false) {
     return { cls: "offline", label: "오프라인", tooltip: "상태: 오프라인" };
   }
-  if (opts.selfReportState != null) {
+  // stale 자기보고 폴백(오너 요청 2026-08-05): "working" 자기보고 후 값을 안 갱신한 채 실제로는
+  // idle_secs 넘게 조용해지면(CSO 실사례) 언제까지나 "작업중"으로 잘못 잡힌다. 2분 넘은 자기보고는
+  // 무시하고 idle_secs 기반 파생 판정으로 폴백 — 자기보고 자체가 사라지진 않으니 tooltip엔 남긴다.
+  const stale = opts.ageSecs != null && opts.ageSecs > SELF_REPORT_STALE_SECS;
+  if (opts.selfReportState != null && !stale) {
     const m = CC_TASK_STATE[opts.selfReportState] ?? { cls: "idle", label: opts.selfReportState };
     const age = opts.ageSecs != null ? ` · ${ccAge(opts.ageSecs)}` : "";
     return { cls: m.cls, label: m.label, tooltip: `상태: ${m.label} · 📍자기보고${age}` };
@@ -511,15 +519,18 @@ function paneStateFrom(opts: {
   const idle = opts.idleSecs ?? 999;
   const cls = idle > 60 ? "idle" : "working";
   const label = idle > 60 ? "대기" : "활동";
-  return { cls, label, tooltip: `상태: ${label} · ⚙파생(idle ${idle}s)` };
+  const staleNote = stale ? ` · 📍자기보고 stale(${ccAge(opts.ageSecs!)}, 무시함)` : "";
+  return { cls, label, tooltip: `상태: ${label} · ⚙파생(idle ${idle}s)${staleNote}` };
 }
 
-// 사이드바 "n/총" 완료 배지 전용 — 엄격 판정(오너 요청 2026-08-05). idle_secs만 보는 느슨한 집계는
-// 자기보고 working/blocked인 pane이 60초 넘게 조용하면 "완료"로 잘못 세는 문제가 있었다.
-// 자기보고가 있으면 idle_secs를 무시하고 working/blocked을 항상 "작업중"으로 취급한다.
+// 사이드바 "n/총" 작업중 배지 전용 — paneStateFrom과 완전히 같은 판정을 재사용(로직 두 벌 금지).
 function paneIsWorking(sig: NodeSig): boolean {
-  if (sig.self_report) return sig.state === "working" || sig.state === "blocked";
-  return sig.idle_secs <= 60;
+  return paneStateFrom({
+    agentAlive: sig.agent_alive,
+    selfReportState: sig.self_report ? sig.state : undefined,
+    idleSecs: sig.idle_secs,
+    ageSecs: sig.age_secs,
+  }).cls === "working";
 }
 
 async function refreshTasks() {

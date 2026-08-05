@@ -107,15 +107,6 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-dot.working { background: var(--ok); }
 .ws-dot.idle { background: var(--warn); }
 .ws-dot.error { background: var(--error); }
-/* pane별 상태 점 묶음(오너 요청 2026-08-05): 워크스페이스 하나에 pane이 여러 개일 때 worst-case 점
-   하나로 뭉개지 않고 각 pane 상태를 개별 점으로 — .ws-dot과 같은 색 언어(--ok/--warn/--error) 재사용.
-   working/error만 깜빡임 — idle/offline은 정지 상태를 그대로 전달하기 위해 고정. */
-.ws-pane-dots { display: inline-flex; gap: 3px; margin-right: 6px; vertical-align: middle; }
-.ws-pane-dots .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
-.ws-pane-dots .dot.working { background: var(--ok); animation: cc-blink 1.4s infinite; }
-.ws-pane-dots .dot.idle { background: var(--warn); }
-.ws-pane-dots .dot.error { background: var(--error); animation: cc-blink 1.4s infinite; }
-.ws-pane-dots .dot.offline { background: var(--border); }
 .ws-tab .ws-sub .sev-warn { color: var(--warn); }
 .ws-tab .ws-sub .sev-crit { color: var(--error); }
 .ws-approve-badge { margin-left: 6px; color: var(--error); font-weight: 700; font-size: 11px; }

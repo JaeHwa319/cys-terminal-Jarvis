@@ -234,13 +234,6 @@ body.ws-reordering { cursor: grabbing; -webkit-user-select: none; user-select: n
 .pane .pane-title-text { overflow: hidden; text-overflow: ellipsis; }
 /* 역할 신호 점(제목 앞): Control Center cc-dot의 깜박임(cc-blink) 재사용 — 역할색은 JS(setRoleDot)가 채운다 */
 .pane .pane-role-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; animation: cc-blink 1.4s infinite; }
-/* 실행상태 점(역할 점 왼쪽, 오너 요청 2026-08-05): 색값은 .cc-dot과 동일 — 앱 전체 상태색 언어 통일.
-   working/error만 깜빡임(cc-blink) — idle/offline은 정지 상태를 그대로 전달하기 위해 고정. */
-.pane .pane-state-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
-.pane .pane-state-dot.working { background: #22c55e; animation: cc-blink 1.4s infinite; }
-.pane .pane-state-dot.idle { background: #64748b; }
-.pane .pane-state-dot.error { background: #ef4444; animation: cc-blink 1.4s infinite; }
-.pane .pane-state-dot.offline { background: #1e293b; }
 /* T5 사용량 관측 배지: CTX(컨텍스트%)·rate limit 윈도우 — 데몬 관측치(usage.rs) 표시 */
 .pane .pane-usage { display: flex; gap: 4px; color: #6e7681; font-variant-numeric: tabular-nums; }
 .pane .pane-usage .warn { color: #d29922; }

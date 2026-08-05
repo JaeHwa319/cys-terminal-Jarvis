@@ -72,6 +72,7 @@ interface PaneRuntime {
   el: HTMLElement;
   termHost: HTMLElement;
   roleEl: HTMLElement; // 제목 앞 역할 신호 점(깜박임) — refreshPaneTitles가 role로 채색
+  stateEl: HTMLElement; // roleEl 왼쪽 실행상태 점(작업중/대기/오류/오프라인) — refreshPaneTitles가 nodeSig로 채색
   titleEl: HTMLElement;
   usageEl: HTMLElement;
   term: Terminal;
@@ -483,6 +484,29 @@ function ccAge(secs: number): string {
   return `${Math.floor(s / 3600)}시간 전`;
 }
 
+// pane 헤더(state-dot)·Control Center(taskRow) 공용 실행상태 판정 — 로직 한 벌만 유지.
+// exited/agent_alive=false → offline. self-report 있으면 CC_TASK_STATE 매핑. 없으면 idle_secs로 추정.
+function paneStateFrom(opts: {
+  exited?: boolean;
+  agentAlive?: boolean | null;
+  selfReportState?: string | null; // status?.state — null/undefined = 자기보고 없음
+  idleSecs: number;
+  ageSecs?: number | null;
+}): { cls: string; label: string; tooltip: string } {
+  if (opts.exited || opts.agentAlive === false) {
+    return { cls: "offline", label: "오프라인", tooltip: "상태: 오프라인" };
+  }
+  if (opts.selfReportState != null) {
+    const m = CC_TASK_STATE[opts.selfReportState] ?? { cls: "idle", label: opts.selfReportState };
+    const age = opts.ageSecs != null ? ` · ${ccAge(opts.ageSecs)}` : "";
+    return { cls: m.cls, label: m.label, tooltip: `상태: ${m.label} · 📍자기보고${age}` };
+  }
+  const idle = opts.idleSecs ?? 999;
+  const cls = idle > 60 ? "idle" : "working";
+  const label = idle > 60 ? "대기" : "활동";
+  return { cls, label, tooltip: `상태: ${label} · ⚙파생(idle ${idle}s)` };
+}
+
 async function refreshTasks() {
   if (!tasksForwardersEnsured) {
     tasksForwardersEnsured = true;
@@ -545,19 +569,13 @@ function taskRow(s: any, deptKey: string): string {
   const color = CC_ROLE_COLOR[role] ?? "#64748b";
   const st = s.status; // 자기보고 {state, context_pct, task, age_secs} | null
   const selfReport = st != null;
-  let cls: string, label: string;
-  if (s.exited) {
-    cls = "offline";
-    label = "오프라인";
-  } else if (selfReport) {
-    const m = CC_TASK_STATE[st.state] ?? { cls: "idle", label: String(st.state) };
-    cls = m.cls;
-    label = m.label;
-  } else {
-    const idle = s.idle_secs ?? 999;
-    cls = idle > 60 ? "idle" : "working";
-    label = idle > 60 ? "대기" : "활동";
-  }
+  const { cls, label } = paneStateFrom({
+    exited: s.exited,
+    agentAlive: s.agent_alive,
+    selfReportState: st?.state,
+    idleSecs: s.idle_secs ?? 999,
+    ageSecs: st?.age_secs,
+  });
   const trust = selfReport
     ? `<span class="cc-trust-badge self" title="노드가 cys set-status로 직접 보고한 상태">📍자기보고</span>`
     : `<span class="cc-trust-badge derived" title="출력 활동에서 데몬이 추정한 상태(자기보고 없음)">⚙파생</span>`;
@@ -1291,7 +1309,15 @@ const panes = new Map<string, PaneRuntime>(); // 키 = paneKey(sid, socket)
 // 부서 데몬 socket_slug(F3 백엔드 단일진실) → socket 경로. launch_dept_daemon 반환·daemon-event로 채운다.
 const socketForSlug = new Map<string, string>();
 // 사이드바 노드 신호 캐시(B3) — org.status 응답을 워크스페이스 행 집계용으로 보관.
-type NodeSig = { role: string | null; state: string; ctx_pct: number | null; idle_secs: number; agent_alive: boolean | null };
+type NodeSig = {
+  role: string | null;
+  state: string;
+  ctx_pct: number | null;
+  idle_secs: number;
+  agent_alive: boolean | null;
+  self_report: boolean; // taskRow와 동일 신뢰도 구분(cys set-status 직접 보고 vs idle_secs 추정) — pane 헤더 tooltip용
+  age_secs: number | null; // self_report일 때만 유효(자기보고 이후 경과초)
+};
 const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
 let pendingApprovals = 0; // org.status feed.pending 집계
 const root = document.getElementById("root")!;
@@ -1436,6 +1462,25 @@ function setRoleDot(el: HTMLElement, role: string | null) {
   }
 }
 
+// pane 헤더 실행상태 점 — nodeSig(3초 주기, org_status)의 자기보고/파생 신호를 paneStateFrom으로
+// taskRow와 동일 판정해 반영. sig가 아직 없으면(부팅 직후 등) 점을 숨긴다(role 점과 동일 관례).
+function setStateDot(el: HTMLElement, exited: boolean, sig: NodeSig | undefined) {
+  if (!sig) {
+    el.style.display = "none";
+    return;
+  }
+  const st = paneStateFrom({
+    exited,
+    agentAlive: sig.agent_alive,
+    selfReportState: sig.self_report ? sig.state : undefined,
+    idleSecs: sig.idle_secs,
+    ageSecs: sig.age_secs,
+  });
+  el.style.display = "";
+  el.className = "pane-state-dot " + st.cls;
+  el.title = st.tooltip;
+}
+
 // 주기적으로 데몬에 물어 자동 제목 pane의 현재 디렉토리(cd 추적)를 갱신.
 // + 외부(CLI launch-agent·cys boot)에서 생성된 역할 노드 surface를 pane으로 자동 입양 —
 //   이게 없으면 노드가 데몬 안에서 헤드리스로만 돌고 화면에 보이지 않는다.
@@ -1464,6 +1509,7 @@ async function refreshPaneTitles() {
         if (!rt) continue;
         renderUsage(rt.usageEl, s.exited ? null : s.usage); // 종료 pane은 배지 제거 (혼동 방지)
         setRoleDot(rt.roleEl, s.exited ? null : s.role); // 역할 점도 동일 주기 갱신
+        setStateDot(rt.stateEl, s.exited, nodeSig.get(`${sk}#${s.surface_id}`)); // 실행상태 점도 동일 주기 갱신(nodeSig 키 형식은 raw `${socket}#${id}` — paneKey와 다름, 2366행과 동일 관례)
         if (rt.titleEl.isContentEditable) continue; // 이름 편집 중에는 덮어쓰지 않음
         rt.titleEl.textContent = paneTitle(s.title, s.live_cwd) + (s.exited ? " [exited]" : "");
       }
@@ -1518,6 +1564,12 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
     if ((e.target as HTMLElement).classList?.contains("pane-close")) return;
     startPaneDrag(e, sid);
   });
+  // 실행상태 점: Control Center taskRow와 같은 판정(paneStateFrom)을 제목 맨 앞에 —
+  // 작업중/대기/오류/오프라인을 그리드에서 오버레이 없이 바로 확인(오너 요청 2026-08-05).
+  // 색·표시 여부는 refreshPaneTitles(3초 주기)가 채운다(생성 시점엔 상태 미상 → 숨김).
+  const stateEl = document.createElement("span");
+  stateEl.className = "pane-state-dot";
+  stateEl.style.display = "none";
   // 역할 신호 점(오너 요청 2026-07-12): Control Center의 깜박이 점을 제목 앞에 — 역할색 구별.
   // 색·표시 여부는 refreshPaneTitles(3초 주기)의 setRoleDot이 채운다(생성 시점엔 role 미상 → 숨김).
   const roleEl = document.createElement("span");
@@ -1556,7 +1608,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
     if (focusedSid === sid) focusedSid = collectSids(ws.tree)[0] ?? null;
     render();
   });
-  header.append(roleEl, titleEl, usageEl, closeBtn);
+  header.append(stateEl, roleEl, titleEl, usageEl, closeBtn);
   header.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     showCtxMenu(e.clientX, e.clientY, [
@@ -1818,7 +1870,7 @@ async function makePane(sid: number, title: string, socket?: string): Promise<Pa
   });
   observer.observe(termHost);
 
-  const rt: PaneRuntime = { sid, socket, el, termHost, roleEl, titleEl, usageEl, term, fit, unlisten: [un1, un2], observer, snapToBottom };
+  const rt: PaneRuntime = { sid, socket, el, termHost, roleEl, stateEl, titleEl, usageEl, term, fit, unlisten: [un1, un2], observer, snapToBottom };
   panes.set(paneKey(sid, socket), rt);
   return rt;
 }
@@ -2283,6 +2335,8 @@ async function refreshSidebarStatus() {
           ctx_pct: n.status?.context_pct ?? n.usage?.ctx_pct ?? null,
           idle_secs: n.idle_secs,
           agent_alive: n.agent_alive,
+          self_report: n.status != null,
+          age_secs: n.status?.age_secs ?? null,
         });
     } catch {
       /* 부서 데몬 일시 부재 */

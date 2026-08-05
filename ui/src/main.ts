@@ -2408,14 +2408,16 @@ function buildTab(ws: Workspace): HTMLElement {
       .filter(Boolean) as NodeSig[];
     const worst = sigs.reduce((acc, s) => Math.max(acc, s.ctx_pct ?? 0), 0);
     const dead = sigs.filter((s) => s.agent_alive === false).length;
-    // idleN: "완료/대기"로 셀 pane 수. paneIsWorking()의 엄격 판정 사용 — 자기보고 working/blocked은
-    // idle_secs와 무관하게 항상 제외. dead는 완료도 작업중도 아닌 별도 범주라 여기서도 제외.
+    // idleN: "대기"로 셀 pane 수(💤 표시용, 기존 의미 유지). paneIsWorking()의 엄격 판정 사용 —
+    // 자기보고 working/blocked은 idle_secs와 무관하게 항상 제외. dead는 별도 범주라 여기서도 제외.
     const idleN = sigs.filter((s) => s.agent_alive !== false && !paneIsWorking(s)).length;
-    // 진행 배지(오너 요청 2026-08-05): worst-case 점 하나 대신 "(완료/총)" — 완료 = 작업중이 아닌
-    // pane(idleN, 기존 집계 재사용). 클릭하면 pane별 상세를 드롭다운으로 펼친다.
+    // workingN: 배지에 실제로 보여줄 값(오너 재요청 2026-08-05) — "완료(n)/총"은 상시 가동되는
+    // fleet 노드(master/cso/worker/reviewer)에 "종결" 뉘앙스가 맞지 않아 어색했다. "작업중(n)/총"으로
+    // 뒤집어서 "지금 몇 개가 바쁜가"를 직접 보여준다 — 판정 로직(paneIsWorking)은 동일, 부호만 반전.
+    const workingN = sigs.filter((s) => s.agent_alive !== false && paneIsWorking(s)).length;
     const toggle = document.createElement("span");
     toggle.className = "ws-progress-toggle";
-    toggle.textContent = `${ws.paneDetailOpen ? "▾" : "▸"} ${idleN}/${sids.length}`;
+    toggle.textContent = `${ws.paneDetailOpen ? "▾" : "▸"} ${workingN}/${sids.length} 작업중`;
     toggle.title = "클릭해서 pane별 상태 펼치기/접기";
     toggle.addEventListener("mousedown", (e) => e.stopPropagation());
     toggle.addEventListener("click", () => {

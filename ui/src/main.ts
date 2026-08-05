@@ -514,6 +514,14 @@ function paneStateFrom(opts: {
   return { cls, label, tooltip: `상태: ${label} · ⚙파생(idle ${idle}s)` };
 }
 
+// 사이드바 "n/총" 완료 배지 전용 — 엄격 판정(오너 요청 2026-08-05). idle_secs만 보는 느슨한 집계는
+// 자기보고 working/blocked인 pane이 60초 넘게 조용하면 "완료"로 잘못 세는 문제가 있었다.
+// 자기보고가 있으면 idle_secs를 무시하고 working/blocked을 항상 "작업중"으로 취급한다.
+function paneIsWorking(sig: NodeSig): boolean {
+  if (sig.self_report) return sig.state === "working" || sig.state === "blocked";
+  return sig.idle_secs <= 60;
+}
+
 async function refreshTasks() {
   if (!tasksForwardersEnsured) {
     tasksForwardersEnsured = true;
@@ -2399,8 +2407,10 @@ function buildTab(ws: Workspace): HTMLElement {
       .map((id) => nodeSig.get(`${ws.socket}#${id}`))
       .filter(Boolean) as NodeSig[];
     const worst = sigs.reduce((acc, s) => Math.max(acc, s.ctx_pct ?? 0), 0);
-    const idleN = sigs.filter((s) => s.state === "idle" || s.idle_secs > 60).length;
     const dead = sigs.filter((s) => s.agent_alive === false).length;
+    // idleN: "완료/대기"로 셀 pane 수. paneIsWorking()의 엄격 판정 사용 — 자기보고 working/blocked은
+    // idle_secs와 무관하게 항상 제외. dead는 완료도 작업중도 아닌 별도 범주라 여기서도 제외.
+    const idleN = sigs.filter((s) => s.agent_alive !== false && !paneIsWorking(s)).length;
     // 진행 배지(오너 요청 2026-08-05): worst-case 점 하나 대신 "(완료/총)" — 완료 = 작업중이 아닌
     // pane(idleN, 기존 집계 재사용). 클릭하면 pane별 상세를 드롭다운으로 펼친다.
     const toggle = document.createElement("span");

@@ -48,6 +48,9 @@ interface Workspace {
   pending?: boolean;
   // 06: 소속 그룹 id(undefined=ungrouped). 부서 ws도 그룹에 들어가면 set. 진실원=localStorage(cys-layout-v2).
   groupId?: number;
+  // pane별 상태 드롭다운 펼침 여부(오너 요청 2026-08-05). ws-group.collapsed와 동일하게 saveLayout()이
+  // 그대로 직렬화 — normalizeWorkspaces가 필드를 걸러내지 않으므로 재시작 후에도 유지된다.
+  paneDetailOpen?: boolean;
 }
 
 // 06: 워크스페이스 그룹 메타데이터. 진실원=localStorage(cys-layout-v2). 데몬은 모름(그룹=UI/solution 층).
@@ -483,6 +486,34 @@ function ccAge(secs: number): string {
   return `${Math.floor(s / 3600)}시간 전`;
 }
 
+// role 우선순위(master>cso>worker>reviewer) — pane 자동입양 정렬(refreshPaneTitles)과 사이드바
+// pane-detail 정렬(buildTab)이 공유. 값이 낮을수록 먼저 온다.
+const rolePri = (role: string | null): number =>
+  role === "master" ? 0 : role === "cso" ? 1 : role?.startsWith("worker") ? 2 : role?.startsWith("reviewer") ? 3 : 4;
+
+// 사이드바 pane-detail·Control Center(taskRow) 공용 실행상태 판정 — 로직 한 벌만 유지.
+// exited/agent_alive=false → offline. self-report 있으면 CC_TASK_STATE 매핑. 없으면 idle_secs로 추정.
+function paneStateFrom(opts: {
+  exited?: boolean;
+  agentAlive?: boolean | null;
+  selfReportState?: string | null; // status?.state — null/undefined = 자기보고 없음
+  idleSecs: number;
+  ageSecs?: number | null;
+}): { cls: string; label: string; tooltip: string } {
+  if (opts.exited || opts.agentAlive === false) {
+    return { cls: "offline", label: "오프라인", tooltip: "상태: 오프라인" };
+  }
+  if (opts.selfReportState != null) {
+    const m = CC_TASK_STATE[opts.selfReportState] ?? { cls: "idle", label: opts.selfReportState };
+    const age = opts.ageSecs != null ? ` · ${ccAge(opts.ageSecs)}` : "";
+    return { cls: m.cls, label: m.label, tooltip: `상태: ${m.label} · 📍자기보고${age}` };
+  }
+  const idle = opts.idleSecs ?? 999;
+  const cls = idle > 60 ? "idle" : "working";
+  const label = idle > 60 ? "대기" : "활동";
+  return { cls, label, tooltip: `상태: ${label} · ⚙파생(idle ${idle}s)` };
+}
+
 async function refreshTasks() {
   if (!tasksForwardersEnsured) {
     tasksForwardersEnsured = true;
@@ -545,19 +576,13 @@ function taskRow(s: any, deptKey: string): string {
   const color = CC_ROLE_COLOR[role] ?? "#64748b";
   const st = s.status; // 자기보고 {state, context_pct, task, age_secs} | null
   const selfReport = st != null;
-  let cls: string, label: string;
-  if (s.exited) {
-    cls = "offline";
-    label = "오프라인";
-  } else if (selfReport) {
-    const m = CC_TASK_STATE[st.state] ?? { cls: "idle", label: String(st.state) };
-    cls = m.cls;
-    label = m.label;
-  } else {
-    const idle = s.idle_secs ?? 999;
-    cls = idle > 60 ? "idle" : "working";
-    label = idle > 60 ? "대기" : "활동";
-  }
+  const { cls, label } = paneStateFrom({
+    exited: s.exited,
+    agentAlive: s.agent_alive,
+    selfReportState: st?.state,
+    idleSecs: s.idle_secs ?? 999,
+    ageSecs: st?.age_secs,
+  });
   const trust = selfReport
     ? `<span class="cc-trust-badge self" title="노드가 cys set-status로 직접 보고한 상태">📍자기보고</span>`
     : `<span class="cc-trust-badge derived" title="출력 활동에서 데몬이 추정한 상태(자기보고 없음)">⚙파생</span>`;
@@ -1291,7 +1316,15 @@ const panes = new Map<string, PaneRuntime>(); // 키 = paneKey(sid, socket)
 // 부서 데몬 socket_slug(F3 백엔드 단일진실) → socket 경로. launch_dept_daemon 반환·daemon-event로 채운다.
 const socketForSlug = new Map<string, string>();
 // 사이드바 노드 신호 캐시(B3) — org.status 응답을 워크스페이스 행 집계용으로 보관.
-type NodeSig = { role: string | null; state: string; ctx_pct: number | null; idle_secs: number; agent_alive: boolean | null };
+type NodeSig = {
+  role: string | null;
+  state: string;
+  ctx_pct: number | null;
+  idle_secs: number;
+  agent_alive: boolean | null;
+  self_report: boolean; // taskRow와 동일 신뢰도 구분(cys set-status 직접 보고 vs idle_secs 추정) — 사이드바 tooltip용
+  age_secs: number | null; // self_report일 때만 유효(자기보고 이후 경과초)
+};
 const nodeSig = new Map<string, NodeSig>(); // 키 = `${socket}#${surface_id}`
 let pendingApprovals = 0; // org.status feed.pending 집계
 const root = document.getElementById("root")!;
@@ -1470,8 +1503,6 @@ async function refreshPaneTitles() {
       // 자동 입양: 그 소켓의 role surface 중 UI에 없는 것 → '같은 소켓을 가진 ws'에만 표출.
       // ★소켓 일치 가드 — 부서A 노드가 부서B 탭에 잘못 입양되는 격리 누수 차단(검증 mustFix).
       // role 우선순위(master>cso>worker>reviewer) 정렬 — 부서 첫 입양 시 master가 첫 pane(좌측·focus)이 되도록.
-      const rolePri = (role: string | null): number =>
-        role === "master" ? 0 : role === "cso" ? 1 : role?.startsWith("worker") ? 2 : role?.startsWith("reviewer") ? 3 : 4;
       for (const s of [...r.surfaces].sort((a, b) => rolePri(a.role) - rolePri(b.role))) {
         if (s.exited || !s.role || panes.has(paneKey(s.surface_id, sk))) continue;
         // !w.pending — 런칭 중 placeholder(socket 미정)에는 입양 금지(타 데몬 surface 오입양 차단).
@@ -2283,6 +2314,8 @@ async function refreshSidebarStatus() {
           ctx_pct: n.status?.context_pct ?? n.usage?.ctx_pct ?? null,
           idle_secs: n.idle_secs,
           agent_alive: n.agent_alive,
+          self_report: n.status != null,
+          age_secs: n.status?.age_secs ?? null,
         });
     } catch {
       /* 부서 데몬 일시 부재 */
@@ -2368,9 +2401,19 @@ function buildTab(ws: Workspace): HTMLElement {
     const worst = sigs.reduce((acc, s) => Math.max(acc, s.ctx_pct ?? 0), 0);
     const idleN = sigs.filter((s) => s.state === "idle" || s.idle_secs > 60).length;
     const dead = sigs.filter((s) => s.agent_alive === false).length;
-    const dot = document.createElement("span");
-    dot.className = "ws-dot " + (dead ? "error" : idleN ? "idle" : "working");
-    sub.appendChild(dot);
+    // 진행 배지(오너 요청 2026-08-05): worst-case 점 하나 대신 "(완료/총)" — 완료 = 작업중이 아닌
+    // pane(idleN, 기존 집계 재사용). 클릭하면 pane별 상세를 드롭다운으로 펼친다.
+    const toggle = document.createElement("span");
+    toggle.className = "ws-progress-toggle";
+    toggle.textContent = `${ws.paneDetailOpen ? "▾" : "▸"} ${idleN}/${sids.length}`;
+    toggle.title = "클릭해서 pane별 상태 펼치기/접기";
+    toggle.addEventListener("mousedown", (e) => e.stopPropagation());
+    toggle.addEventListener("click", () => {
+      ws.paneDetailOpen = !ws.paneDetailOpen;
+      saveLayout();
+      render();
+    });
+    sub.appendChild(toggle);
     const txt = document.createElement("span");
     const bits = [`${sids.length} pane`];
     if (firstTitle) bits.push(firstTitle);
@@ -2383,6 +2426,46 @@ function buildTab(ws: Workspace): HTMLElement {
     sub.appendChild(txt);
   }
   tab.append(titleRow, sub);
+  // pane별 상세 드롭다운(오너 요청 2026-08-05): 토글이 펼침 상태일 때만 role 우선순위 정렬로 나열.
+  // 행 클릭 = 해당 pane으로 포커스 이동(문제 있는 pane을 바로 확인) — 탭 전환과 동일한 패턴 재사용.
+  if (!ws.pending && ws.paneDetailOpen) {
+    const detail = document.createElement("div");
+    detail.className = "ws-pane-detail";
+    for (const id of [...sids].sort(
+      (a, b) => rolePri(nodeSig.get(`${ws.socket}#${a}`)?.role ?? null) - rolePri(nodeSig.get(`${ws.socket}#${b}`)?.role ?? null),
+    )) {
+      const sig = nodeSig.get(`${ws.socket}#${id}`);
+      const st = paneStateFrom({
+        agentAlive: sig?.agent_alive,
+        selfReportState: sig?.self_report ? sig.state : undefined,
+        idleSecs: sig?.idle_secs ?? 999,
+        ageSecs: sig?.age_secs,
+      });
+      const row = document.createElement("div");
+      row.className = "row";
+      row.title = st.tooltip;
+      const dot = document.createElement("span");
+      dot.className = "dot " + st.cls;
+      const name = document.createElement("span");
+      name.className = "name";
+      name.textContent = sig?.role ?? panes.get(paneKey(id, ws.socket))?.titleEl.textContent ?? `pane ${id}`;
+      const stat = document.createElement("span");
+      stat.className = "stat";
+      stat.textContent = st.label;
+      row.append(dot, name, stat);
+      row.addEventListener("mousedown", (e) => e.stopPropagation());
+      row.addEventListener("click", () => {
+        const i = workspaces.indexOf(ws);
+        if (i !== activeWs) {
+          activeWs = i;
+          render();
+        }
+        setFocus(id);
+      });
+      detail.appendChild(row);
+    }
+    tab.appendChild(detail);
+  }
   tab.addEventListener("mousedown", (e) => {
     // 우클릭은 전환하지 않음 — render()가 탭 DOM을 재생성하면 컨텍스트 메뉴가 죽은 엘리먼트를 잡는다
     if (e.button !== 0 || e.target === close) return;

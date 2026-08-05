@@ -107,6 +107,27 @@ body.wsbar-resizing { cursor: col-resize; -webkit-user-select: none; user-select
 .ws-dot.working { background: var(--ok); }
 .ws-dot.idle { background: var(--warn); }
 .ws-dot.error { background: var(--error); }
+/* 진행 배지 "▸ n/총"(오너 요청 2026-08-05) — 클릭해 pane별 상세를 펼침/접음. .ws-approve-badge 톤 재사용. */
+.ws-progress-toggle {
+  margin-right: 6px; cursor: pointer; font-variant-numeric: tabular-nums;
+  border-radius: 4px; padding: 0 3px;
+}
+.ws-progress-toggle:hover { background: rgba(255,255,255,.08); color: var(--text); }
+/* pane별 상세 드롭다운 — .ws-group-body와 같은 세로 나열 관례, 들여쓰기로 소속 표시. */
+.ws-pane-detail { display: flex; flex-direction: column; gap: 1px; margin: 3px 0 0 4px; }
+.ws-pane-detail .row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 6px; border-radius: 5px; cursor: pointer;
+  font-size: calc(11px * var(--wsbar-font, 1));
+}
+.ws-pane-detail .row:hover { background: #1c2128; }
+.ws-pane-detail .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
+.ws-pane-detail .dot.working { background: var(--ok); animation: cc-blink 1.4s infinite; }
+.ws-pane-detail .dot.idle { background: var(--warn); }
+.ws-pane-detail .dot.error { background: var(--error); animation: cc-blink 1.4s infinite; }
+.ws-pane-detail .dot.offline { background: var(--border); }
+.ws-pane-detail .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); }
+.ws-pane-detail .stat { flex: none; color: #8b949e; }
 .ws-tab .ws-sub .sev-warn { color: var(--warn); }
 .ws-tab .ws-sub .sev-crit { color: var(--error); }
 .ws-approve-badge { margin-left: 6px; color: var(--error); font-weight: 700; font-size: 11px; }
